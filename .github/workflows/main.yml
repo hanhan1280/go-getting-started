@@ -1,8 +1,6 @@
 name: deploy cleanup-meetings
 on:
-  push:
-    branches:
-      - dev
+  workflow_dispatch:
 jobs:
   DeployCleanupMeetingsJob:
     name: Deploy staging cleanup-meetings

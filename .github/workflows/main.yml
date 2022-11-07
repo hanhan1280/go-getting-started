@@ -1,0 +1,88 @@
+name: deploy cleanup-meetings
+on:
+  push:
+    branches:
+      - dev
+jobs:
+  DeployCleanupMeetingsJob:
+    name: Deploy staging cleanup-meetings
+    runs-on: ubuntu-latest
+    env:
+      CLEANUP_JOB_IMAGE_VAR_ID: var-tUFmVdx8Ae385XCR
+      REPOSITORY_NAME: cleanup-meetings
+      KUBECTL_ID: cronjob/cleanup-meetings
+    steps:
+      # Setup - checkout code
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
+      # - name: Track Changed
+      #   id: changed
+      #   uses: ./.github/actions/track-changed
+
+      - name: List
+        id: files
+        uses: jitterbit/get-changed-files@v1
+    
+      - name: Changes
+        id: changes
+        run: |
+          GO_PKG=$(cat go.mod | head -n 1 | cut -d' ' -f2-);
+          FILES=(${{ steps.files.outputs.all }})
+          for elem in "${FILES[@]}"; do 
+              [[ $elem != *_test.go ]] && PKGS+=("$elem"); 
+          done
+          PKGS=$(echo ${PKGS[@]} | xargs dirname | uniq)
+          echo $PKGS;
+          MODIFIED=(); 
+          UNMODIFIED=();
+          for PKG in $(go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./cmd/...); do
+            for DEP in `go list -f '{{print .ImportPath "\n"}}{{range $v := .Deps}}{{print . "\n"}}{{end}}' $PKG`; do
+              for CHANGE in $PKGS; do
+                if [ "$DEP" = "$GO_PKG/$CHANGE" ] || [ "vendor/$DEP" = "$CHANGE" ]; then
+                  MODIFIED+=("$PKG"); 
+                  continue 3
+                fi
+              done
+            done
+            UNMODIFIED+=("$PKG")
+          done
+          echo ::set-output name=modified::${MODIFIED[@]}
+          echo ::set-output name=unmodified::${UNMODIFIED[@]}
+
+      - name: List modified and unmodified files
+        id: deploy
+        run: |
+          for BIN in ${{ steps.changes.outputs.unmodified }}; do
+            echo "✅ $BIN is up to date"
+          done
+            
+          GO_PKG=$(cat go.mod | head -n 1 | cut -d' ' -f2-)
+          branch="${GITHUB_REF##*/}"
+          DEPLOYED=();
+          for BIN in ${{ steps.changes.outputs.modified }}; do
+            echo "🔼 $BIN needs a new deploy"
+          done
+        
+      - name: Build Docker image
+        # if:   ${{steps.changed.outputs.deploy_needed == 'true'}}
+        run: docker build  --tag cleanup-meetings-job-ci -f cmd/cleanup_meeting/Dockerfile .
+      
+      - name: Push Image to ECR
+        # if:   ${{steps.changed.outputs.deploy_needed == 'true'}}
+        id: ecr
+        uses: jwalton/gh-ecr-push@v1
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          region: us-east-1
+          image: ${{ env.REPOSITORY_NAME }}:${{ github.sha }}
+          local-image: cleanup-meetings-job-ci
+      
+      # - uses: actions-hub/kubectl@master
+      #   env:
+      #     KUBE_HOST: ${{ secrets.KUBE_HOST }}
+      #     KUBE_CERTIFICATE: ${{ secrets.KUBE_CERTIFICATE }}
+      #     KUBE_TOKEN: ${{ secrets.KUBE_TOKEN }}
+      #   with:
+      #     args: set image ${{ env.KUBECTL_ID }} cleanup-meetings=${{ steps.ecr.outputs.imageUrl }
